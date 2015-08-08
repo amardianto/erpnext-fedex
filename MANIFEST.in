@@ -1,0 +1,18 @@
+include MANIFEST.in
+include requirements.txt
+include *.json
+include *.md
+include *.py
+include *.txt
+recursive-include fedex_shipment *.css
+recursive-include fedex_shipment *.csv
+recursive-include fedex_shipment *.html
+recursive-include fedex_shipment *.ico
+recursive-include fedex_shipment *.js
+recursive-include fedex_shipment *.json
+recursive-include fedex_shipment *.md
+recursive-include fedex_shipment *.png
+recursive-include fedex_shipment *.py
+recursive-include fedex_shipment *.svg
+recursive-include fedex_shipment *.txt
+recursive-exclude fedex_shipment *.pyc
