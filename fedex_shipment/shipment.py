@@ -91,6 +91,9 @@ def make_fedex_shipment(source_name, target_doc=None):
         else:
             frappe.msgprint('Shipping Address is missed in Delivery Note %s' % doc_delivery_note.name)
 
+    if frappe.db.get_value('Packing Slip', source_name, 'fedex_shipment') or frappe.db.get_value('Packing Slip', source_name, 'oc_tracking_number'):
+        frappe.throw('Cannot make new Fedex Shipment: either Fedex Shipment is already created or tracking number is set.')
+
     doclist = get_mapped_doc('Packing Slip', source_name, {
         'Packing Slip': {
             'doctype': 'Fedex Shipment',
@@ -98,9 +101,7 @@ def make_fedex_shipment(source_name, target_doc=None):
                 'name': 'packing_slip'
             },
             'validation': {
-                'docstatus': ['=', 0],
-                'fedex_shipment': ['=', None],
-                'oc_tracking_number': ['=', ''],
+                'docstatus': ['=', 0]
             }
         }
     }, target_doc, postprocess)
