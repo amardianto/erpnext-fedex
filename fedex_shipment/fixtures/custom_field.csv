@@ -19,3 +19,5 @@ d"Data Import Template"
 "Info:","","Valid DocType","One of: Attach, Button, Check, Code, Column Break, Currency, Data, Date, Datetime, Dynamic Link, Float, HTML, Image, Int, Link, Long Text, Password, Percent, Read Only, Section Break, Select, Small Text, Table, Text, Text Editor, Time","","","One of: 1, 2, 3, 4, 5, 6, 7, 8, 9","","","","Integer","0 or 1","0 or 1","0 or 1","0 or 1","","","0 or 1","","0 or 1","0 or 1","0 or 1","0 or 1","0 or 1","0 or 1"
 "Start entering data below this line"
 "","""Packing Slip Item-warehouse""","Packing Slip Item","Data","Warehouse","","","","","warehouse",0,0,"",0,0,"","",0,"",0,0,0,0,0,0
+"","""Packing Slip-fedex_shipment""","Packing Slip","Link","Fedex Shipment","from_case_no","","Fedex Shipment","","fedex_shipment",0,0,"",1,0,"","",0,"",0,0,0,0,0,0
+"","""Packing Slip-oc_tracking_number""","Packing Slip","Data","Tracking Number","fedex_shipment","","","","oc_tracking_number",0,0,"",0,0,"","",0,"",0,0,0,0,0,0

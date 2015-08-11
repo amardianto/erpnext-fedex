@@ -46,6 +46,9 @@ def on_submit(doc, method=None):
     else:
         frappe.msgprint('Cannot update tracking number for Delivery Note %s' % delivery_note)
 
+    if not frappe.db.get_value('Packing Slip', doc.packing_slip, 'fedex_shipment'):
+        frappe.db.set_value('Packing Slip', doc.packing_slip, 'fedex_shipment', doc.name)
+
 
 def before_cancel(doc, method=None):
     delete(doc.tracking_number)
@@ -95,7 +98,9 @@ def make_fedex_shipment(source_name, target_doc=None):
                 'name': 'packing_slip'
             },
             'validation': {
-                'docstatus': ['=', 0]
+                'docstatus': ['=', 0],
+                'fedex_shipment': ['=', None],
+                'oc_tracking_number': ['=', ''],
             }
         }
     }, target_doc, postprocess)
