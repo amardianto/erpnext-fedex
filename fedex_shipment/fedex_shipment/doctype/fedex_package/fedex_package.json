@@ -1,0 +1,67 @@
+{
+ "creation": "2015-06-24 15:49:57", 
+ "description": "Fedex Package", 
+ "docstatus": 0, 
+ "doctype": "DocType", 
+ "fields": [
+  {
+   "default": "LB", 
+   "description": "", 
+   "fieldname": "weight_units", 
+   "fieldtype": "Select", 
+   "in_list_view": 1, 
+   "label": "Weight Units", 
+   "options": "LB\nKG", 
+   "permlevel": 0, 
+   "reqd": 1
+  }, 
+  {
+   "description": "", 
+   "fieldname": "weight_value", 
+   "fieldtype": "Float", 
+   "in_list_view": 1, 
+   "label": "Weight Value", 
+   "permlevel": 0, 
+   "reqd": 1
+  }, 
+  {
+   "fieldname": "label_image", 
+   "fieldtype": "Attach", 
+   "label": "Label Image", 
+   "permlevel": 0, 
+   "precision": "", 
+   "print_hide": 1
+  }, 
+  {
+   "fieldname": "label_image_view", 
+   "fieldtype": "Image", 
+   "label": "Label Image View", 
+   "options": "label_image", 
+   "permlevel": 0, 
+   "precision": "", 
+   "print_hide": 1
+  }
+ ], 
+ "icon": "icon-cog", 
+ "idx": 1, 
+ "issingle": 0, 
+ "modified": "2015-07-14 00:51:48.095525", 
+ "modified_by": "Administrator", 
+ "module": "Fedex Shipment", 
+ "name": "Fedex Package", 
+ "owner": "Administrator", 
+ "permissions": [
+  {
+   "create": 1, 
+   "email": 0, 
+   "permlevel": 0, 
+   "print": 1, 
+   "report": 0, 
+   "export": 1, 
+   "read": 1, 
+   "role": "System Manager", 
+   "share": 1, 
+   "write": 1
+  }
+ ]
+}

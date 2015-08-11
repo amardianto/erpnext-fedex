@@ -29,7 +29,7 @@ app_version = "0.0.1"
 
 # website user home page (by Role)
 # role_home_page = {
-#	"Role": "home_page"
+#   "Role": "home_page"
 # }
 
 # Generators
@@ -55,44 +55,51 @@ app_version = "0.0.1"
 # Permissions evaluated in scripted ways
 
 # permission_query_conditions = {
-# 	"Event": "frappe.desk.doctype.event.event.get_permission_query_conditions",
+#   "Event": "frappe.desk.doctype.event.event.get_permission_query_conditions",
 # }
 #
 # has_permission = {
-# 	"Event": "frappe.desk.doctype.event.event.has_permission",
+#   "Event": "frappe.desk.doctype.event.event.has_permission",
 # }
 
 # Document Events
 # ---------------
 # Hook on document methods and events
 
-# doc_events = {
-# 	"*": {
-# 		"on_update": "method",
-# 		"on_cancel": "method",
-# 		"on_trash": "method"
-#	}
-# }
+doc_events = {
+    "Fedex Shipment": {
+        "validate": "fedex_shipment.shipment.validate",
+        "on_submit": "fedex_shipment.shipment.on_submit",
+        "before_submit": "fedex_shipment.shipment.before_submit",
+        "before_cancel": "fedex_shipment.shipment.before_cancel"
+    }
+}
+
+
+doctype_js = {
+    "Packing Slip": ["custom_scripts/packing_slip.js"]
+}
+
 
 # Scheduled Tasks
 # ---------------
 
 # scheduler_events = {
-# 	"all": [
-# 		"fedex_shipment.tasks.all"
-# 	],
-# 	"daily": [
-# 		"fedex_shipment.tasks.daily"
-# 	],
-# 	"hourly": [
-# 		"fedex_shipment.tasks.hourly"
-# 	],
-# 	"weekly": [
-# 		"fedex_shipment.tasks.weekly"
-# 	]
-# 	"monthly": [
-# 		"fedex_shipment.tasks.monthly"
-# 	]
+#   "all": [
+#       "fedex_shipment.tasks.all"
+#   ],
+#   "daily": [
+#       "fedex_shipment.tasks.daily"
+#   ],
+#   "hourly": [
+#       "fedex_shipment.tasks.hourly"
+#   ],
+#   "weekly": [
+#       "fedex_shipment.tasks.weekly"
+#   ]
+#   "monthly": [
+#       "fedex_shipment.tasks.monthly"
+#   ]
 # }
 
 # Testing
@@ -104,6 +111,5 @@ app_version = "0.0.1"
 # ------------------------------
 #
 # override_whitelisted_methods = {
-# 	"frappe.desk.doctype.event.event.get_events": "fedex_shipment.event.get_events"
+#   "frappe.desk.doctype.event.event.get_events": "fedex_shipment.event.get_events"
 # }
-

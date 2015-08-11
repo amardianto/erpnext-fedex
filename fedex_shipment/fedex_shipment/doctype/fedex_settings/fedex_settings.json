@@ -43,6 +43,15 @@
    "in_list_view": 0, 
    "label": "Freight Account Number", 
    "permlevel": 0
+  }, 
+  {
+   "description": "", 
+   "fieldname": "use_test_server", 
+   "fieldtype": "Check", 
+   "in_list_view": 0, 
+   "label": "Use Test Server", 
+   "permlevel": 0, 
+   "default": "1"
   }
  ], 
  "icon": "icon-cog", 

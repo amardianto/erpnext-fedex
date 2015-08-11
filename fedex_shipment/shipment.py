@@ -1,0 +1,742 @@
+from __future__ import unicode_literals
+
+import logging
+import base64
+
+import frappe
+from frappe.utils.file_manager import save_file, get_file, get_files_path
+from frappe.utils import cstr
+from frappe.model.mapper import get_mapped_doc
+
+from fedex.services.ship_service import FedexProcessShipmentRequest
+from fedex.services.ship_service import FedexDeleteShipmentRequest
+from fedex.services.track_service import FedexTrackRequest
+from fedex.services.rate_service import FedexRateServiceRequest
+from fedex.services.package_movement import PostalCodeInquiryRequest
+from fedex.services.address_validation_service import FedexAddressValidationRequest
+
+import fedex_config
+import countries
+
+
+# Set this to the INFO level to see the response from Fedex printed in stdout.
+logging.basicConfig(level=logging.DEBUG)
+
+
+def validate(doc, method=None):
+    pass
+
+
+def before_submit(doc, method=None):
+    create(doc)
+
+
+def on_submit(doc, method=None):
+    if not frappe.db.get_value('Packing Slip', doc.packing_slip, 'oc_tracking_number'):
+        frappe.db.set_value('Packing Slip', doc.packing_slip, 'oc_tracking_number', doc.tracking_number)
+        frappe.msgprint('Tracking number was updated for Packing Slip %s' % doc.packing_slip)
+    else:
+        frappe.msgprint('Cannot update tracking number for Packing Slip %s' % doc.packing_slip)
+    frappe.db.set_value('Packing Slip', doc.get('delivery_note'), 'oc_tracking_number', doc.get('tracking_number'))
+
+    delivery_note = frappe.db.get_value('Packing Slip', doc.packing_slip, 'delivery_note')
+    if not frappe.db.get_value('Delivery Note', delivery_note, 'oc_tracking_number'):
+        frappe.db.set_value('Delivery Note', delivery_note, 'oc_tracking_number', doc.tracking_number)
+        frappe.msgprint('Tracking number was updated for Delivery Note %s' % delivery_note)
+    else:
+        frappe.msgprint('Cannot update tracking number for Delivery Note %s' % delivery_note)
+
+
+def before_cancel(doc, method=None):
+    delete(doc.tracking_number)
+
+
+@frappe.whitelist()
+def make_fedex_shipment(source_name, target_doc=None):
+    def postprocess(source, target):
+        doc_delivery_note = frappe.get_doc('Delivery Note', source.delivery_note)
+
+        # updating shipper address
+        warehouse = frappe.db.get('Warehouse', source.items[0].warehouse)
+        if not warehouse:
+            warehouse = frappe.db.get('Warehouse', doc_delivery_note.items[0].warehouse)
+            if not warehouse:
+                frappe.throw('Neither Packing Slip Item nor Delivery Note Item has warehouse set.')
+        target.shipper_address_address_line_1 = warehouse.address_line_1
+        target.shipper_address_city = warehouse.city
+        target.shipper_address_state_or_province_code = countries.get_country_state_code(warehouse.country, warehouse.state)
+        target.shipper_address_postal_code = warehouse.postal_code or warehouse.pin
+        if not warehouse.country:
+            frappe.throw('Please specify country in Warehouse %s' % warehouse.name)
+        target.shipper_address_country_code = countries.get_country_code(warehouse.country)
+        target.shipper_contact_person_name = warehouse.company
+        target.shipper_contact_company_name = warehouse.company
+        target.shipper_contact_phone_number = warehouse.phone_no
+
+        # updating recipient address
+        if doc_delivery_note.shipping_address_name:
+            shipping_address = frappe.db.get('Address', doc_delivery_note.shipping_address_name)
+            target.recipient_address = shipping_address.name
+            target.recipient_address_address_line_1 = shipping_address.address_line1
+            target.recipient_address_city = shipping_address.city
+            target.recipient_address_state_or_province_code = countries.get_country_state_code(shipping_address.country, shipping_address.state)
+            target.recipient_address_postal_code = shipping_address.pincode
+            target.recipient_address_country_code = countries.get_country_code(shipping_address.country)
+            target.recipient_contact_person_name = shipping_address.customer_name
+            target.recipient_contact_company_name = shipping_address.customer_name
+            target.recipient_contact_phone_number = shipping_address.phone
+        else:
+            frappe.msgprint('Shipping Address is missed in Delivery Note %s' % doc_delivery_note.name)
+
+    doclist = get_mapped_doc('Packing Slip', source_name, {
+        'Packing Slip': {
+            'doctype': 'Fedex Shipment',
+            'field_map': {
+                'name': 'packing_slip'
+            },
+            'validation': {
+                'docstatus': ['=', 0]
+            }
+        }
+    }, target_doc, postprocess)
+
+    return doclist
+
+
+def create(doc_fedex_shipment):
+    config_obj = fedex_config.get()
+
+    # This is the object that will be handling our tracking request.
+    shipment = FedexProcessShipmentRequest(config_obj)
+
+    # This is very generalized, top-level information.
+    # REGULAR_PICKUP, REQUEST_COURIER, DROP_BOX, BUSINESS_SERVICE_CENTER or STATION
+    shipment.RequestedShipment.DropoffType = doc_fedex_shipment.drop_off_type
+
+    # See page 355 in WS_ShipService.pdf for a full list. Here are the common ones:
+    # STANDARD_OVERNIGHT, PRIORITY_OVERNIGHT, FEDEX_GROUND, FEDEX_EXPRESS_SAVER
+    shipment.RequestedShipment.ServiceType = doc_fedex_shipment.service_type
+
+    # What kind of package this will be shipped in.
+    # FEDEX_BOX, FEDEX_PAK, FEDEX_TUBE, YOUR_PACKAGING
+    shipment.RequestedShipment.PackagingType = doc_fedex_shipment.packaging_type
+
+    # Shipper address.
+    shipment.RequestedShipment.Shipper.Address.CountryCode = doc_fedex_shipment.shipper_address_country_code
+    shipment.RequestedShipment.Shipper.Address.PostalCode = doc_fedex_shipment.shipper_address_postal_code
+    shipment.RequestedShipment.Shipper.Address.StateOrProvinceCode = doc_fedex_shipment.shipper_address_state_or_province_code
+    shipment.RequestedShipment.Shipper.Address.City = doc_fedex_shipment.shipper_address_city
+    shipment.RequestedShipment.Shipper.Address.StreetLines = [doc_fedex_shipment.shipper_address_address_line_1]
+    shipment.RequestedShipment.Shipper.Address.Residential = True if doc_fedex_shipment.shipper_address_residential else False
+
+    # Shipper contact info.
+    shipment.RequestedShipment.Shipper.Contact.PersonName = doc_fedex_shipment.shipper_contact_person_name
+    shipment.RequestedShipment.Shipper.Contact.CompanyName = doc_fedex_shipment.shipper_contact_company_name
+    shipment.RequestedShipment.Shipper.Contact.PhoneNumber = doc_fedex_shipment.shipper_contact_phone_number
+
+    # Recipient address
+    # This is needed to ensure an accurate rate quote with the response.
+    shipment.RequestedShipment.Recipient.Address.CountryCode = doc_fedex_shipment.recipient_address_country_code
+    shipment.RequestedShipment.Recipient.Address.PostalCode = doc_fedex_shipment.recipient_address_postal_code
+    shipment.RequestedShipment.Recipient.Address.StateOrProvinceCode = doc_fedex_shipment.recipient_address_state_or_province_code
+    shipment.RequestedShipment.Recipient.Address.City = doc_fedex_shipment.recipient_address_city
+    shipment.RequestedShipment.Recipient.Address.StreetLines = [doc_fedex_shipment.recipient_address_address_line_1]
+    shipment.RequestedShipment.Recipient.Address.Residential = True if doc_fedex_shipment.recipient_address_residential else False
+
+    # Recipient contact info.
+    shipment.RequestedShipment.Recipient.Contact.PersonName = doc_fedex_shipment.recipient_contact_person_name
+    shipment.RequestedShipment.Recipient.Contact.CompanyName = doc_fedex_shipment.recipient_contact_company_name
+    shipment.RequestedShipment.Recipient.Contact.PhoneNumber = doc_fedex_shipment.recipient_contact_phone_number
+
+    shipment.RequestedShipment.EdtRequestType = 'NONE'
+
+    shipment.RequestedShipment.ShippingChargesPayment.Payor.ResponsibleParty.AccountNumber = config_obj.account_number
+    # Who pays for the shipment?
+    # RECIPIENT, SENDER or THIRD_PARTY
+    shipment.RequestedShipment.ShippingChargesPayment.PaymentType = doc_fedex_shipment.payment_type
+
+    # Specifies the label type to be returned.
+    # LABEL_DATA_ONLY or COMMON2D
+    shipment.RequestedShipment.LabelSpecification.LabelFormatType = doc_fedex_shipment.label_format_type
+
+    # Specifies which format the label file will be sent to you in.
+    # DPL, EPL2, PDF, PNG, ZPLII
+    shipment.RequestedShipment.LabelSpecification.ImageType = doc_fedex_shipment.label_image_type
+
+    # To use doctab stocks, you must change ImageType above to one of the
+    # label printer formats (ZPLII, EPL2, DPL).
+    # See documentation for paper types, there quite a few.
+    shipment.RequestedShipment.LabelSpecification.LabelStockType = doc_fedex_shipment.label_stock_type
+
+    # This indicates if the top or bottom of the label comes out of the
+    # printer first.
+    # BOTTOM_EDGE_OF_TEXT_FIRST or TOP_EDGE_OF_TEXT_FIRST
+    shipment.RequestedShipment.LabelSpecification.LabelPrintingOrientation = doc_fedex_shipment.label_printing_orientation
+
+    # shipment for one package
+    package_weight = shipment.create_wsdl_object_of_type('Weight')
+    # Weight, in pounds.
+    package_weight.Units = doc_fedex_shipment.package_weight_units
+    package_weight.Value = doc_fedex_shipment.package_weight_value
+
+    package = shipment.create_wsdl_object_of_type('RequestedPackageLineItem')
+    package.PhysicalPackaging = 'BOX'
+    package.Weight = package_weight
+    # Un-comment this to see the other variables you may set on a package.
+    # print package
+
+    # This adds the RequestedPackageLineItem WSDL object to the shipment. It
+    # increments the package count and total weight of the shipment for you.
+    shipment.add_package(package)
+
+    # If you'd like to see some documentation on the ship service WSDL, un-comment
+    # this line. (Spammy).
+    # print shipment.client
+
+    # Un-comment this to see your complete, ready-to-send request as it stands
+    # before it is actually sent. This is useful for seeing what values you can
+    # change.
+    # print shipment.RequestedShipment
+
+    # If you want to make sure that all of your entered details are valid, you
+    # can call this and parse it just like you would via send_request(). If
+    # shipment.response.HighestSeverity == "SUCCESS", your shipment is valid.
+    # shipment.send_validation_request()
+
+    # Fires off the request, sets the 'response' attribute on the object.
+    try:
+        shipment.send_request()
+    except Exception as ex:
+        frappe.throw('Fedex API: ' + cstr(ex))
+
+    # This will show the reply to your shipment being sent. You can access the
+    # attributes through the response attribute on the request object. This is
+    # good to un-comment to see the variables returned by the Fedex reply.
+    # print shipment.response
+
+    # See the response printed out.
+    if shipment.response.HighestSeverity == "SUCCESS":
+        frappe.msgprint('Shipment is created successfully in Fedex service.')
+    else:
+        frappe.throw(shipment.response)
+
+    # frappe.msgprint(str(shipment.response))
+
+    # Getting the tracking number from the new shipment.
+    tracking_number = shipment.response.CompletedShipmentDetail.CompletedPackageDetails[0].TrackingIds[0].TrackingNumber
+
+    # Net shipping costs.
+    # print "Net Shipping Cost (US$):", shipment.response.CompletedShipmentDetail.CompletedPackageDetails[0].PackageRating.PackageRateDetails[0].NetCharge.Amount
+
+    label_image_data = base64.b64decode(shipment.response.CompletedShipmentDetail.CompletedPackageDetails[0].Label.Parts[0].Image)
+    saved_file = save_file('fedex_label_%s.%s' % (tracking_number, doc_fedex_shipment.label_image_type.lower()), label_image_data, doc_fedex_shipment.doctype, doc_fedex_shipment.name)
+
+    doc_fedex_shipment.update({'tracking_number': tracking_number, 'label_image': saved_file.file_url})
+    # Convert the ASCII data to binary.
+    # label_binary_data = binascii.a2b_base64(ascii_label_data)
+
+    """
+    This is an example of how to dump a label to a PNG file.
+    """
+    # This will be the file we write the label out to.
+    # png_file = open('example_shipment_label.png', 'wb')
+    # png_file.write(label_binary_data)
+    # png_file.close()
+
+    """
+    This is an example of how to print the label to a serial printer. This will not
+    work for all label printers, consult your printer's documentation for more
+    details on what formats it can accept.
+    """
+    # Pipe the binary directly to the label printer. Works under Linux
+    # without requiring PySerial. This WILL NOT work on other platforms.
+    # label_printer = open("/dev/ttyS0", "w")
+    # label_printer.write(label_binary_data)
+    # label_printer.close()
+
+    """
+    This is a potential cross-platform solution using pySerial. This has not been
+    tested in a long time and may or may not work. For Windows, Mac, and other
+    platforms, you may want to go this route.
+    """
+    # import serial
+    # label_printer = serial.Serial(0)
+    # print "SELECTED SERIAL PORT: "+ label_printer.portstr
+    # label_printer.write(label_binary_data)
+    # label_printer.close()
+
+
+def create_freight():
+    config_obj = fedex_config.get()
+
+    # This is the object that will be handling our tracking request.
+    shipment = FedexProcessShipmentRequest(config_obj)
+    shipment.RequestedShipment.DropoffType = 'REGULAR_PICKUP'
+    shipment.RequestedShipment.ServiceType = 'FEDEX_FREIGHT_ECONOMY'
+    shipment.RequestedShipment.PackagingType = 'YOUR_PACKAGING'
+
+    shipment.RequestedShipment.FreightShipmentDetail.FedExFreightAccountNumber = config_obj.freight_account_number
+
+    # Shipper contact info.
+    shipment.RequestedShipment.Shipper.Contact.PersonName = 'Sender Name'
+    shipment.RequestedShipment.Shipper.Contact.CompanyName = 'Some Company'
+    shipment.RequestedShipment.Shipper.Contact.PhoneNumber = '9012638716'
+
+    # Shipper address.
+    shipment.RequestedShipment.Shipper.Address.StreetLines = ['1202 Chalet Ln']
+    shipment.RequestedShipment.Shipper.Address.City = 'Harrison'
+    shipment.RequestedShipment.Shipper.Address.StateOrProvinceCode = 'AR'
+    shipment.RequestedShipment.Shipper.Address.PostalCode = '72601'
+    shipment.RequestedShipment.Shipper.Address.CountryCode = 'US'
+    shipment.RequestedShipment.Shipper.Address.Residential = True
+
+    # Recipient contact info.
+    shipment.RequestedShipment.Recipient.Contact.PersonName = 'Recipient Name'
+    shipment.RequestedShipment.Recipient.Contact.CompanyName = 'Recipient Company'
+    shipment.RequestedShipment.Recipient.Contact.PhoneNumber = '9012637906'
+
+    # Recipient address
+    shipment.RequestedShipment.Recipient.Address.StreetLines = ['2000 Freight LTL Testing']
+    shipment.RequestedShipment.Recipient.Address.City = 'Harrison'
+    shipment.RequestedShipment.Recipient.Address.StateOrProvinceCode = 'AR'
+    shipment.RequestedShipment.Recipient.Address.PostalCode = '72601'
+    shipment.RequestedShipment.Recipient.Address.CountryCode = 'US'
+
+    # This is needed to ensure an accurate rate quote with the response.
+    shipment.RequestedShipment.Recipient.Address.Residential = False
+    shipment.RequestedShipment.FreightShipmentDetail.TotalHandlingUnits = 1
+    shipment.RequestedShipment.ShippingChargesPayment.Payor.ResponsibleParty.AccountNumber = config_obj.freight_account_number
+
+    shipment.RequestedShipment.FreightShipmentDetail.FedExFreightBillingContactAndAddress.Contact.PersonName = 'Sender Name'
+    shipment.RequestedShipment.FreightShipmentDetail.FedExFreightBillingContactAndAddress.Contact.CompanyName = 'Some Company'
+    shipment.RequestedShipment.FreightShipmentDetail.FedExFreightBillingContactAndAddress.Contact.PhoneNumber = '9012638716'
+
+    shipment.RequestedShipment.FreightShipmentDetail.FedExFreightBillingContactAndAddress.Address.StreetLines = ['2000 Freight LTL Testing']
+    shipment.RequestedShipment.FreightShipmentDetail.FedExFreightBillingContactAndAddress.Address.City = 'Harrison'
+    shipment.RequestedShipment.FreightShipmentDetail.FedExFreightBillingContactAndAddress.Address.StateOrProvinceCode = 'AR'
+    shipment.RequestedShipment.FreightShipmentDetail.FedExFreightBillingContactAndAddress.Address.PostalCode = '72601'
+    shipment.RequestedShipment.FreightShipmentDetail.FedExFreightBillingContactAndAddress.Address.CountryCode = 'US'
+    shipment.RequestedShipment.FreightShipmentDetail.FedExFreightBillingContactAndAddress.Address.Residential = False
+    spec = shipment.create_wsdl_object_of_type('ShippingDocumentSpecification')
+
+    spec.ShippingDocumentTypes = [spec.CertificateOfOrigin]
+    # shipment.RequestedShipment.ShippingDocumentSpecification = spec
+
+    role = shipment.create_wsdl_object_of_type('FreightShipmentRoleType')
+
+    shipment.RequestedShipment.FreightShipmentDetail.Role = role.SHIPPER
+    shipment.RequestedShipment.FreightShipmentDetail.CollectTermsType = 'STANDARD'
+
+    # Specifies the label type to be returned.
+    shipment.RequestedShipment.LabelSpecification.LabelFormatType = 'FEDEX_FREIGHT_STRAIGHT_BILL_OF_LADING'
+
+    # Specifies which format the label file will be sent to you in.
+    # DPL, EPL2, PDF, PNG, ZPLII
+    shipment.RequestedShipment.LabelSpecification.ImageType = 'PDF'
+
+    # To use doctab stocks, you must change ImageType above to one of the
+    # label printer formats (ZPLII, EPL2, DPL).
+    # See documentation for paper types, there quite a few.
+    shipment.RequestedShipment.LabelSpecification.LabelStockType = 'PAPER_LETTER'
+
+    # This indicates if the top or bottom of the label comes out of the
+    # printer first.
+    # BOTTOM_EDGE_OF_TEXT_FIRST or TOP_EDGE_OF_TEXT_FIRST
+    shipment.RequestedShipment.LabelSpecification.LabelPrintingOrientation = 'BOTTOM_EDGE_OF_TEXT_FIRST'
+    shipment.RequestedShipment.EdtRequestType = 'NONE'
+
+    package1_weight = shipment.create_wsdl_object_of_type('Weight')
+    package1_weight.Value = 500.0
+    package1_weight.Units = "LB"
+
+    shipment.RequestedShipment.FreightShipmentDetail.PalletWeight = package1_weight
+
+    package1 = shipment.create_wsdl_object_of_type('FreightShipmentLineItem')
+    package1.Weight = package1_weight
+    package1.Packaging = 'PALLET'
+    package1.Description = 'Products'
+    package1.FreightClass = 'CLASS_500'
+    package1.HazardousMaterials = None
+    package1.Pieces = 12
+
+    shipment.RequestedShipment.FreightShipmentDetail.LineItems = package1
+
+    # If you'd like to see some documentation on the ship service WSDL, un-comment
+    # this line. (Spammy).
+    # print shipment.client
+
+    # Un-comment this to see your complete, ready-to-send request as it stands
+    # before it is actually sent. This is useful for seeing what values you can
+    # change.
+    # print shipment.RequestedShipment
+
+    # If you want to make sure that all of your entered details are valid, you
+    # can call this and parse it just like you would via send_request(). If
+    # shipment.response.HighestSeverity == "SUCCESS", your shipment is valid.
+    # shipment.send_validation_request()
+
+    # Fires off the request, sets the 'response' attribute on the object.
+    shipment.send_request()
+
+    # This will show the reply to your shipment being sent. You can access the
+    # attributes through the response attribute on the request object. This is
+    # good to un-comment to see the variables returned by the Fedex reply.
+    print shipment.response
+    # Here is the overall end result of the query.
+    # print "HighestSeverity:", shipment.response.HighestSeverity
+    # # Getting the tracking number from the new shipment.
+    # print "Tracking #:", shipment.response.CompletedShipmentDetail.CompletedPackageDetails[0].TrackingIds[0].TrackingNumber
+    # # Net shipping costs.
+    # print "Net Shipping Cost (US$):", shipment.response.CompletedShipmentDetail.CompletedPackageDetails[0].PackageRating.PackageRateDetails[0].NetCharge.Amount
+
+    # # Get the label image in ASCII format from the reply. Note the list indices
+    # we're using. You'll need to adjust or iterate through these if your shipment
+    # has multiple packages.
+
+    ascii_label_data = shipment.response.CompletedShipmentDetail.ShipmentDocuments[0].Parts[0].Image
+
+    # Convert the ASCII data to binary.
+    label_binary_data = binascii.a2b_base64(ascii_label_data)
+
+    """
+    This is an example of how to dump a label to a PNG file.
+    """
+    # This will be the file we write the label out to.
+    pdf_file = open('example_shipment_label.pdf', 'wb')
+    pdf_file.write(label_binary_data)
+    pdf_file.close()
+
+    """
+    This is an example of how to print the label to a serial printer. This will not
+    work for all label printers, consult your printer's documentation for more
+    details on what formats it can accept.
+    """
+    # Pipe the binary directly to the label printer. Works under Linux
+    # without requiring PySerial. This WILL NOT work on other platforms.
+    # label_printer = open("/dev/ttyS0", "w")
+    # label_printer.write(label_binary_data)
+    # label_printer.close()
+
+    """
+    This is a potential cross-platform solution using pySerial. This has not been
+    tested in a long time and may or may not work. For Windows, Mac, and other
+    platforms, you may want to go this route.
+    """
+    # import serial
+    # label_printer = serial.Serial(0)
+    # print "SELECTED SERIAL PORT: "+ label_printer.portstr
+    # label_printer.write(label_binary_data)
+    # label_printer.close()
+
+
+def delete(tracking_number):
+    config_obj = fedex_config.get()
+
+    # This is the object that will be handling our tracking request.
+    del_request = FedexDeleteShipmentRequest(config_obj)
+
+    # Either delete all packages in a shipment, or delete an individual package.
+    # Docs say this isn't required, but the WSDL won't validate without it.
+    # DELETE_ALL_PACKAGES, DELETE_ONE_PACKAGE
+    del_request.DeletionControlType = "DELETE_ALL_PACKAGES"
+
+    # The tracking number of the shipment to delete.
+    del_request.TrackingId.TrackingNumber = tracking_number
+
+    # What kind of shipment the tracking number used.
+    # Docs say this isn't required, but the WSDL won't validate without it.
+    # EXPRESS, GROUND, or USPS
+    del_request.TrackingId.TrackingIdType = 'EXPRESS'
+
+    # Fires off the request, sets the 'response' attribute on the object.
+    try:
+        del_request.send_request()
+    except Exception as ex:
+        frappe.throw('Fedex API: ' + cstr(ex))
+
+    # See the response printed out.
+    if del_request.response.HighestSeverity == "SUCCESS":
+        frappe.msgprint('Shipment with tracking number %s is deleted successfully.' % tracking_number)
+    else:
+        frappe.throw(del_request.response.Message)
+
+
+def track(track_number):
+    config_obj = fedex_config.get()
+
+    # NOTE: TRACKING IS VERY ERRATIC ON THE TEST SERVERS. YOU MAY NEED TO USE
+    # PRODUCTION KEYS/PASSWORDS/ACCOUNT #.
+    track = FedexTrackRequest(config_obj)
+    track.TrackPackageIdentifier.Type = 'TRACKING_NUMBER_OR_DOORTAG'
+    track.TrackPackageIdentifier.Value = track_number
+
+    # Fires off the request, sets the 'response' attribute on the object.
+    track.send_request()
+
+    # See the response printed out.
+    print track.response
+
+    # Look through the matches (there should only be one for a tracking number
+    # query), and show a few details about each shipment.
+    print "== Results =="
+    for match in track.response.TrackDetails:
+        print "Tracking #:", match.TrackingNumber
+        print "Status:", match.StatusDescription
+
+
+def rate_request():
+    config_obj = fedex_config.get()
+
+    # This is the object that will be handling our tracking request.
+    rate_request = FedexRateServiceRequest(config_obj)
+
+    # If you wish to have transit data returned with your request you
+    # need to uncomment the following
+    # rate_request.ReturnTransitAndCommit = True
+
+    # This is very generalized, top-level information.
+    # REGULAR_PICKUP, REQUEST_COURIER, DROP_BOX, BUSINESS_SERVICE_CENTER or STATION
+    rate_request.RequestedShipment.DropoffType = 'REGULAR_PICKUP'
+
+    # See page 355 in WS_ShipService.pdf for a full list. Here are the common ones:
+    # STANDARD_OVERNIGHT, PRIORITY_OVERNIGHT, FEDEX_GROUND, FEDEX_EXPRESS_SAVER
+    # To receive rates for multiple ServiceTypes set to None.
+    rate_request.RequestedShipment.ServiceType = 'FEDEX_GROUND'
+
+    # What kind of package this will be shipped in.
+    # FEDEX_BOX, FEDEX_PAK, FEDEX_TUBE, YOUR_PACKAGING
+    rate_request.RequestedShipment.PackagingType = 'YOUR_PACKAGING'
+
+    # Shipper's address
+    rate_request.RequestedShipment.Shipper.Address.PostalCode = '29631'
+    rate_request.RequestedShipment.Shipper.Address.CountryCode = 'US'
+    rate_request.RequestedShipment.Shipper.Address.Residential = False
+
+    # Recipient address
+    rate_request.RequestedShipment.Recipient.Address.PostalCode = '27577'
+    rate_request.RequestedShipment.Recipient.Address.CountryCode = 'US'
+    # This is needed to ensure an accurate rate quote with the response.
+    # rate_request.RequestedShipment.Recipient.Address.Residential = True
+    # include estimated duties and taxes in rate quote, can be ALL or NONE
+    rate_request.RequestedShipment.EdtRequestType = 'NONE'
+
+    # Who pays for the rate_request?
+    # RECIPIENT, SENDER or THIRD_PARTY
+    rate_request.RequestedShipment.ShippingChargesPayment.PaymentType = 'SENDER'
+
+    package1_weight = rate_request.create_wsdl_object_of_type('Weight')
+    # Weight, in LB.
+    package1_weight.Value = 1.0
+    package1_weight.Units = "LB"
+
+    package1 = rate_request.create_wsdl_object_of_type('RequestedPackageLineItem')
+    package1.Weight = package1_weight
+    # can be other values this is probably the most common
+    package1.PhysicalPackaging = 'BOX'
+    # Required, but according to FedEx docs:
+    # "Used only with PACKAGE_GROUPS, as a count of packages within a
+    # group of identical packages". In practice you can use this to get rates
+    # for a shipment with multiple packages of an identical package size/weight
+    # on rate request without creating multiple RequestedPackageLineItem elements.
+    # You can OPTIONALLY specify a package group:
+    # package1.GroupNumber = 0  # default is 0
+    # The result will be found in RatedPackageDetail, with specified GroupNumber.
+    package1.GroupPackageCount = 1
+    # Un-comment this to see the other variables you may set on a package.
+    # print package1
+
+    # This adds the RequestedPackageLineItem WSDL object to the rate_request. It
+    # increments the package count and total weight of the rate_request for you.
+    rate_request.add_package(package1)
+
+    # If you'd like to see some documentation on the ship service WSDL, un-comment
+    # this line. (Spammy).
+    # print rate_request.client
+
+    # Un-comment this to see your complete, ready-to-send request as it stands
+    # before it is actually sent. This is useful for seeing what values you can
+    # change.
+    # print rate_request.RequestedShipment
+
+    # Fires off the request, sets the 'response' attribute on the object.
+    rate_request.send_request()
+
+    # This will show the reply to your rate_request being sent. You can access the
+    # attributes through the response attribute on the request object. This is
+    # good to un-comment to see the variables returned by the FedEx reply.
+    # print rate_request.response
+
+    # Here is the overall end result of the query.
+    print "HighestSeverity:", rate_request.response.HighestSeverity
+
+    # RateReplyDetails can contain rates for multiple ServiceTypes if ServiceType was set to None
+    for service in rate_request.response.RateReplyDetails:
+        for detail in service.RatedShipmentDetails:
+            for surcharge in detail.ShipmentRateDetail.Surcharges:
+                if surcharge.SurchargeType == 'OUT_OF_DELIVERY_AREA':
+                    print "%s: ODA rate_request charge %s" % (service.ServiceType, surcharge.Amount.Amount)
+
+        for rate_detail in service.RatedShipmentDetails:
+            print "%s: Net FedEx Charge %s %s" % (service.ServiceType, rate_detail.ShipmentRateDetail.TotalNetFedExCharge.Currency, rate_detail.ShipmentRateDetail.TotalNetFedExCharge.Amount)
+
+
+def freight_rate_request():
+    config_obj = fedex_config.get()
+
+    # This is the object that will be handling our tracking request.
+    rate_request = FedexRateServiceRequest(config_obj)
+
+    rate_request.RequestedShipment.ServiceType = 'FEDEX_FREIGHT_ECONOMY'
+
+    rate_request.RequestedShipment.DropoffType = 'REGULAR_PICKUP'
+
+    rate_request.RequestedShipment.PackagingType = 'YOUR_PACKAGING'
+
+    rate_request.RequestedShipment.FreightShipmentDetail.TotalHandlingUnits = 1
+
+    rate_request.RequestedShipment.FreightShipmentDetail.FedExFreightAccountNumber = config_obj.freight_account_number
+
+    rate_request.RequestedShipment.Shipper.Address.PostalCode = '72601'
+    rate_request.RequestedShipment.Shipper.Address.CountryCode = 'US'
+    rate_request.RequestedShipment.Shipper.Address.City = 'Harrison'
+    rate_request.RequestedShipment.Shipper.Address.StateOrProvinceCode = 'AR'
+    rate_request.RequestedShipment.Shipper.Address.Residential = False
+    rate_request.RequestedShipment.Recipient.Address.PostalCode = '72601'
+    rate_request.RequestedShipment.Recipient.Address.CountryCode = 'US'
+    rate_request.RequestedShipment.Recipient.Address.StateOrProvinceCode = 'AR'
+    rate_request.RequestedShipment.Recipient.Address.City = 'Harrison'
+
+    # include estimated duties and taxes in rate quote, can be ALL or NONE
+    rate_request.RequestedShipment.EdtRequestType = 'NONE'
+
+    # note: in order for this to work in test, you may need to use the
+    # specially provided LTL addresses emailed to you when signing up.
+    rate_request.RequestedShipment.FreightShipmentDetail.FedExFreightBillingContactAndAddress.Contact.PersonName = 'Sender Name'
+    rate_request.RequestedShipment.FreightShipmentDetail.FedExFreightBillingContactAndAddress.Contact.CompanyName = 'Some Company'
+    rate_request.RequestedShipment.FreightShipmentDetail.FedExFreightBillingContactAndAddress.Contact.PhoneNumber = '9012638716'
+    rate_request.RequestedShipment.FreightShipmentDetail.FedExFreightBillingContactAndAddress.Address.StreetLines = ['2000 Freight LTL Testing']
+    rate_request.RequestedShipment.FreightShipmentDetail.FedExFreightBillingContactAndAddress.Address.City = 'Harrison'
+    rate_request.RequestedShipment.FreightShipmentDetail.FedExFreightBillingContactAndAddress.Address.StateOrProvinceCode = 'AR'
+    rate_request.RequestedShipment.FreightShipmentDetail.FedExFreightBillingContactAndAddress.Address.PostalCode = '72601'
+    rate_request.RequestedShipment.FreightShipmentDetail.FedExFreightBillingContactAndAddress.Address.CountryCode = 'US'
+    rate_request.RequestedShipment.FreightShipmentDetail.FedExFreightBillingContactAndAddress.Address.Residential = False
+
+    spec = rate_request.create_wsdl_object_of_type('ShippingDocumentSpecification')
+
+    spec.ShippingDocumentTypes = [spec.CertificateOfOrigin]
+
+    rate_request.RequestedShipment.ShippingDocumentSpecification = spec
+
+    role = rate_request.create_wsdl_object_of_type('FreightShipmentRoleType')
+    rate_request.RequestedShipment.FreightShipmentDetail.Role = role.SHIPPER
+
+    # Designates the terms of the "collect" payment for a Freight
+    # Shipment. Can be NON_RECOURSE_SHIPPER_SIGNED or STANDARD
+    rate_request.RequestedShipment.FreightShipmentDetail.CollectTermsType = 'STANDARD'
+
+    package1_weight = rate_request.create_wsdl_object_of_type('Weight')
+    package1_weight.Value = 500.0
+    package1_weight.Units = "LB"
+
+    rate_request.RequestedShipment.FreightShipmentDetail.PalletWeight = package1_weight
+
+    package1 = rate_request.create_wsdl_object_of_type('FreightShipmentLineItem')
+    package1.Weight = package1_weight
+    package1.Packaging = 'PALLET'
+    package1.Description = 'Products'
+    package1.FreightClass = 'CLASS_500'
+
+    rate_request.RequestedShipment.FreightShipmentDetail.LineItems = package1
+
+    # If you'd like to see some documentation on the ship service WSDL, un-comment
+    # this line. (Spammy).
+    # print rate_request.client
+
+    # Un-comment this to see your complete, ready-to-send request as it stands
+    # before it is actually sent. This is useful for seeing what values you can
+    # change.
+    # print rate_request.RequestedShipment
+
+    # Fires off the request, sets the 'response' attribute on the object.
+    rate_request.send_request()
+
+    # This will show the reply to your rate_request being sent. You can access the
+    # attributes through the response attribute on the request object. This is
+    # good to un-comment to see the variables returned by the FedEx reply.
+    # print rate_request.response
+
+    # Here is the overall end result of the query.
+    print "HighestSeverity:", rate_request.response.HighestSeverity
+
+    # RateReplyDetails can contain rates for multiple ServiceTypes if ServiceType was set to None
+    for service in rate_request.response.RateReplyDetails:
+        for detail in service.RatedShipmentDetails:
+            for surcharge in detail.ShipmentRateDetail.Surcharges:
+                if surcharge.SurchargeType == 'OUT_OF_DELIVERY_AREA':
+                    print "%s: ODA rate_request charge %s" % (service.ServiceType, surcharge.Amount.Amount)
+
+        for rate_detail in service.RatedShipmentDetails:
+            print "%s: Net FedEx Charge %s %s" % (service.ServiceType, rate_detail.ShipmentRateDetail.TotalNetFedExCharge.Currency, rate_detail.ShipmentRateDetail.TotalNetFedExCharge.Amount)
+
+
+def postal_inquiry():
+    config_obj = fedex_config.get()
+
+    inquiry = PostalCodeInquiryRequest(config_obj)
+    inquiry.PostalCode = '29631'
+    inquiry.CountryCode = 'US'
+
+    # Fires off the request, sets the 'response' attribute on the object.
+    inquiry.send_request()
+
+    # See the response printed out.
+    print inquiry.response
+
+
+def validate_address():
+    config_obj = fedex_config.get()
+
+    # This is the object that will be handling our tracking request.
+    connection = FedexAddressValidationRequest(config_obj)
+
+    # The AddressValidationOptions are created with default values of None, which
+    # will cause WSDL validation errors. To make things work, each option needs to
+    # be explicitly set or deleted.
+
+    # Set the flags we want to True (or a value).
+    connection.AddressValidationOptions.CheckResidentialStatus = True
+    connection.AddressValidationOptions.VerifyAddresses = True
+    connection.AddressValidationOptions.RecognizeAlternateCityNames = True
+    connection.AddressValidationOptions.MaximumNumberOfMatches = 3
+
+    # Delete the flags we don't want.
+    del connection.AddressValidationOptions.ConvertToUpperCase
+    del connection.AddressValidationOptions.ReturnParsedElements
+
+    # *Accuracy fields can be TIGHT, EXACT, MEDIUM, or LOOSE. Or deleted.
+    connection.AddressValidationOptions.StreetAccuracy = 'LOOSE'
+    del connection.AddressValidationOptions.DirectionalAccuracy
+    del connection.AddressValidationOptions.CompanyNameAccuracy
+
+    # Create some addresses to validate
+    address1 = connection.create_wsdl_object_of_type('AddressToValidate')
+    address1.CompanyName = 'International Paper'
+    address1.Address.StreetLines = ['155 Old Greenville Hwy', 'Suite 103']
+    address1.Address.City = 'Clemson'
+    address1.Address.StateOrProvinceCode = 'SC'
+    address1.Address.PostalCode = 29631
+    address1.Address.CountryCode = 'US'
+    address1.Address.Residential = False
+    connection.add_address(address1)
+
+    address2 = connection.create_wsdl_object_of_type('AddressToValidate')
+    address2.Address.StreetLines = ['320 S Cedros', '#200']
+    address2.Address.City = 'Solana Beach'
+    address2.Address.StateOrProvinceCode = 'CA'
+    address2.Address.PostalCode = 92075
+    address2.Address.CountryCode = 'US'
+    connection.add_address(address2)
+
+    # Send the request and print the response
+    connection.send_request()
+    print connection.response
