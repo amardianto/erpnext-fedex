@@ -16,7 +16,3 @@ cur_frm.cscript['Make Fedex Shipment'] = function() {
         frm: cur_frm
     })
 }
-
-cur_frm.cscript.on_submit = function(doc, сdt, сdn) {
-    window.location.reload();
-}
