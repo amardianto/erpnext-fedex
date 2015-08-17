@@ -5,6 +5,15 @@
  "doctype": "DocType", 
  "fields": [
   {
+   "description": "", 
+   "fieldname": "tracking_number", 
+   "fieldtype": "Data", 
+   "in_list_view": 1, 
+   "label": "Tracking Number", 
+   "permlevel": 0, 
+   "read_only": 1
+  }, 
+  {
    "default": "LB", 
    "description": "", 
    "fieldname": "weight_units", 
@@ -23,6 +32,61 @@
    "label": "Weight Value", 
    "permlevel": 0, 
    "reqd": 1
+  }, 
+  {
+   "description": "", 
+   "fieldname": "dimensions_cb", 
+   "fieldtype": "Column Break", 
+   "label": "", 
+   "permlevel": 0
+  }, 
+  {
+   "default": "IN", 
+   "description": "", 
+   "fieldname": "dimensions_units", 
+   "fieldtype": "Select", 
+   "in_list_view": 0, 
+   "label": "Dimensions Units", 
+   "options": "IN\nCM", 
+   "permlevel": 0, 
+   "reqd": 1
+  }, 
+  {
+   "default": "15", 
+   "description": "", 
+   "fieldname": "length", 
+   "fieldtype": "Float", 
+   "in_list_view": 0, 
+   "label": "Length", 
+   "permlevel": 0, 
+   "reqd": 1
+  }, 
+  {
+   "default": "10", 
+   "description": "", 
+   "fieldname": "width", 
+   "fieldtype": "Float", 
+   "in_list_view": 0, 
+   "label": "Width", 
+   "permlevel": 0, 
+   "reqd": 1
+  }, 
+  {
+   "default": "6", 
+   "description": "", 
+   "fieldname": "height", 
+   "fieldtype": "Float", 
+   "in_list_view": 0, 
+   "label": "Height", 
+   "permlevel": 0, 
+   "reqd": 1
+  }, 
+  {
+   "description": "", 
+   "fieldname": "label_sb", 
+   "fieldtype": "Section Break", 
+   "label": "", 
+   "permlevel": 0
   }, 
   {
    "fieldname": "label_image", 

@@ -1,14 +1,25 @@
 {
+ "allow_rename": 1, 
+ "autoname": "field:fedex_settings_name", 
  "creation": "2015-06-24 15:49:57", 
  "description": "Settings for Fedex", 
  "docstatus": 0, 
  "doctype": "DocType", 
  "fields": [
   {
+   "fieldname": "fedex_settings_name", 
+   "fieldtype": "Data", 
+   "label": "Fedex Setting Name", 
+   "no_copy": 0, 
+   "permlevel": 0, 
+   "read_only": 0, 
+   "reqd": 1
+  }, 
+  {
    "description": "", 
    "fieldname": "key", 
    "fieldtype": "Data", 
-   "in_list_view": 0, 
+   "in_list_view": 1, 
    "label": "Key", 
    "permlevel": 0
   }, 
@@ -24,7 +35,7 @@
    "description": "", 
    "fieldname": "account_number", 
    "fieldtype": "Data", 
-   "in_list_view": 0, 
+   "in_list_view": 1, 
    "label": "Account Number", 
    "permlevel": 0
   }, 
@@ -32,7 +43,7 @@
    "description": "", 
    "fieldname": "meter_number", 
    "fieldtype": "Data", 
-   "in_list_view": 0, 
+   "in_list_view": 1, 
    "label": "Meter Number", 
    "permlevel": 0
   }, 
@@ -40,7 +51,7 @@
    "description": "", 
    "fieldname": "freight_account_number", 
    "fieldtype": "Data", 
-   "in_list_view": 0, 
+   "in_list_view": 1, 
    "label": "Freight Account Number", 
    "permlevel": 0
   }, 
@@ -52,11 +63,19 @@
    "label": "Use Test Server", 
    "permlevel": 0, 
    "default": "1"
+  }, 
+  {
+   "fieldname": "companies", 
+   "fieldtype": "Table", 
+   "label": "Companies", 
+   "options": "Fedex Settings Company", 
+   "permlevel": 0, 
+   "precision": ""
   }
  ], 
  "icon": "icon-cog", 
  "idx": 1, 
- "issingle": 1, 
+ "issingle": 0, 
  "modified": "2015-07-14 00:51:48.095525", 
  "modified_by": "Administrator", 
  "module": "Fedex Shipment", 
@@ -65,9 +84,12 @@
  "permissions": [
   {
    "create": 1, 
-   "email": 1, 
+   "delete": 1, 
+   "email": 0, 
    "permlevel": 0, 
    "print": 1, 
+   "report": 0, 
+   "export": 0, 
    "read": 1, 
    "role": "System Manager", 
    "share": 1, 

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 from __future__ import unicode_literals
 
 import logging
@@ -5,7 +6,7 @@ import base64
 
 import frappe
 from frappe.utils.file_manager import save_file, get_file, get_files_path
-from frappe.utils import cstr
+from frappe.utils import cstr, flt
 from frappe.model.mapper import get_mapped_doc
 
 from fedex.services.ship_service import FedexProcessShipmentRequest
@@ -17,6 +18,7 @@ from fedex.services.address_validation_service import FedexAddressValidationRequ
 
 import fedex_config
 import countries
+import utils
 
 
 # Set this to the INFO level to see the response from Fedex printed in stdout.
@@ -59,6 +61,9 @@ def make_fedex_shipment(source_name, target_doc=None):
     def postprocess(source, target):
         doc_delivery_note = frappe.get_doc('Delivery Note', source.delivery_note)
 
+        # updating preferred currency that is used for returned from Fedex totals
+        target.preferred_currency = doc_delivery_note.currency
+
         # updating shipper address
         warehouse = frappe.db.get('Warehouse', source.items[0].warehouse)
         if not warehouse:
@@ -78,6 +83,7 @@ def make_fedex_shipment(source_name, target_doc=None):
 
         # updating recipient address
         if doc_delivery_note.shipping_address_name:
+            target.fedex_settings = utils.get_fedex_settings(doc_delivery_note.company)
             shipping_address = frappe.db.get('Address', doc_delivery_note.shipping_address_name)
             target.recipient_address = shipping_address.name
             target.recipient_address_address_line_1 = shipping_address.address_line1
@@ -160,6 +166,7 @@ def create(doc_fedex_shipment):
     # Who pays for the shipment?
     # RECIPIENT, SENDER or THIRD_PARTY
     shipment.RequestedShipment.ShippingChargesPayment.PaymentType = doc_fedex_shipment.payment_type
+    shipment.RequestedShipment.PreferredCurrency = doc_fedex_shipment.preferred_currency
 
     # Specifies the label type to be returned.
     # LABEL_DATA_ONLY or COMMON2D
@@ -179,21 +186,44 @@ def create(doc_fedex_shipment):
     # BOTTOM_EDGE_OF_TEXT_FIRST or TOP_EDGE_OF_TEXT_FIRST
     shipment.RequestedShipment.LabelSpecification.LabelPrintingOrientation = doc_fedex_shipment.label_printing_orientation
 
-    # shipment for one package
-    package_weight = shipment.create_wsdl_object_of_type('Weight')
-    # Weight, in pounds.
-    package_weight.Units = doc_fedex_shipment.package_weight_units
-    package_weight.Value = doc_fedex_shipment.package_weight_value
-
+    doc_master_package = doc_fedex_shipment.packages[0]
     package = shipment.create_wsdl_object_of_type('RequestedPackageLineItem')
     package.PhysicalPackaging = 'BOX'
-    package.Weight = package_weight
-    # Un-comment this to see the other variables you may set on a package.
-    # print package
 
-    # This adds the RequestedPackageLineItem WSDL object to the shipment. It
-    # increments the package count and total weight of the shipment for you.
-    shipment.add_package(package)
+    # adding weight
+    package_weight = shipment.create_wsdl_object_of_type('Weight')
+    package_weight.Units = doc_master_package.weight_units
+    package_weight.Value = doc_master_package.weight_value
+    package.Weight = package_weight
+
+    # adding dimensions
+    package_dimensions = shipment.create_wsdl_object_of_type('Dimensions')
+    package_dimensions.Units = doc_master_package.dimensions_units
+    package_dimensions.Length = doc_master_package.length
+    package_dimensions.Width = doc_master_package.width
+    package_dimensions.Height = doc_master_package.height
+    package.Dimensions = package_dimensions
+
+    package.SequenceNumber = 1
+    shipment.RequestedShipment.RequestedPackageLineItems = [package]
+    shipment.RequestedShipment.PackageCount = len(doc_fedex_shipment.packages)
+    shipment.RequestedShipment.TotalWeight.Units = doc_fedex_shipment.packages[0].weight_units
+    shipment.RequestedShipment.TotalWeight.Value = sum(flt(p.weight_value) for p in doc_fedex_shipment.packages)
+
+    # shipment.RequestedShipment.CustomsClearanceDetail = shipment.create_wsdl_object_of_type('CustomsClearanceDetail')
+    # shipment.RequestedShipment.CustomsClearanceDetail.DutiesPayment = new Payment();
+    # shipment.RequestedShipment.CustomsClearanceDetail.DutiesPayment.PaymentType = PaymentType.SENDER;
+    # shipment.RequestedShipment.CustomsClearanceDetail.DutiesPayment.Payor = new Payor();
+    # shipment.RequestedShipment.CustomsClearanceDetail.DutiesPayment.Payor.AccountNumber = "XXX"; // Replace "XXX" with the payor account number
+    # shipment.RequestedShipment.CustomsClearanceDetail.DutiesPayment.Payor.CountryCode = "CA";
+    # shipment.RequestedShipment.CustomsClearanceDetail.DocumentContent = InternationalDocumentContentType.NON_DOCUMENTS;
+
+    # shipment.RequestedShipment.CustomsClearanceDetail.CustomsValue = new Money();
+    # shipment.RequestedShipment.CustomsClearanceDetail.CustomsValue.Amount = 100.0M;
+    # shipment.RequestedShipment.CustomsClearanceDetail.CustomsValue.Currency = "USD";
+
+    # shipment.RequestedShipment.CustomsClearanceDetail.CustomsValue.Currency = 'USD'
+    # shipment.RequestedShipment.CustomsClearanceDetail.CustomsValue.Amount = '123.4'
 
     # If you'd like to see some documentation on the ship service WSDL, un-comment
     # this line. (Spammy).
@@ -214,32 +244,166 @@ def create(doc_fedex_shipment):
         shipment.send_request()
     except Exception as ex:
         frappe.throw('Fedex API: ' + cstr(ex))
-
+    # frappe.msgprint('11111---' * 100 + cstr(shipment.response))
     # This will show the reply to your shipment being sent. You can access the
     # attributes through the response attribute on the request object. This is
     # good to un-comment to see the variables returned by the Fedex reply.
     # print shipment.response
 
-    # See the response printed out.
+    # SUCCESS — Your transaction succeeded with no other applicable information.
+    # NOTE — Additional information that may be of interest to you about your transaction.
+    # WARNING — Additional information that you need to know about your transaction that you may need to take action on.
+    # ERROR — Information about an error that occurred while processing your transaction.
+    # FAILURE — FedEx was unable to process your transaction.
+    msg = ''
+    try:
+        msg = shipment.response.Message
+    except:
+        pass
     if shipment.response.HighestSeverity == "SUCCESS":
         frappe.msgprint('Shipment is created successfully in Fedex service.')
-    else:
-        frappe.throw(shipment.response)
+    elif shipment.response.HighestSeverity == "NOTE":
+        frappe.msgprint('Shipment is created in Fedex service with the following note:\n%s' % msg)
+        for notification in shipment.response.Notifications:
+            frappe.msgprint('Code: %s, %s' % (notification.Code, notification.Message))
+    elif shipment.response.HighestSeverity == "WARNING":
+        frappe.msgprint('Shipment is created in Fedex service with the following warning:\n%s' % msg)
+        for notification in shipment.response.Notifications:
+            frappe.msgprint('Code: %s, %s' % (notification.Code, notification.Message))
+    else:  # ERROR, FAILURE
+        frappe.throw('Creating of Shipment in Fedex service failed.')
+        for notification in shipment.response.Notifications:
+            frappe.msgprint('Code: %s, %s' % (notification.Code, notification.Message))
 
-    # frappe.msgprint(str(shipment.response))
+#########
+    # for service in rate_request.response.RateReplyDetails:
+    #     for detail in service.RatedShipmentDetails:
+    #         for surcharge in detail.ShipmentRateDetail.Surcharges:
+    #             if surcharge.SurchargeType == 'OUT_OF_DELIVERY_AREA':
+    #                 print "%s: ODA rate_request charge %s" % (service.ServiceType, surcharge.Amount.Amount)
 
-    # Getting the tracking number from the new shipment.
-    tracking_number = shipment.response.CompletedShipmentDetail.CompletedPackageDetails[0].TrackingIds[0].TrackingNumber
+    #     for rate_detail in service.RatedShipmentDetails:
+    #         print "%s: Net FedEx Charge %s %s" % (service.ServiceType, rate_detail.ShipmentRateDetail.TotalNetFedExCharge.Currency, rate_detail.ShipmentRateDetail.TotalNetFedExCharge.Amount)
+#########
 
     # Net shipping costs.
     # print "Net Shipping Cost (US$):", shipment.response.CompletedShipmentDetail.CompletedPackageDetails[0].PackageRating.PackageRateDetails[0].NetCharge.Amount
 
+    master_tracking_number = shipment.response.CompletedShipmentDetail.CompletedPackageDetails[0].TrackingIds[0].TrackingNumber
     label_image_data = base64.b64decode(shipment.response.CompletedShipmentDetail.CompletedPackageDetails[0].Label.Parts[0].Image)
-    saved_file = save_file('fedex_label_%s.%s' % (tracking_number, doc_fedex_shipment.label_image_type.lower()), label_image_data, doc_fedex_shipment.doctype, doc_fedex_shipment.name)
+    saved_file = save_file('fedex_label_%s.%s' % (master_tracking_number, doc_fedex_shipment.label_image_type.lower()), label_image_data, doc_fedex_shipment.doctype, doc_fedex_shipment.name)
 
-    doc_fedex_shipment.update({'tracking_number': tracking_number, 'label_image': saved_file.file_url})
-    # Convert the ASCII data to binary.
-    # label_binary_data = binascii.a2b_base64(ascii_label_data)
+    doc_master_package.update({
+        'tracking_number': master_tracking_number,
+        'label_image': saved_file.file_url
+    })
+
+    doc_fedex_shipment.update({
+        'tracking_number': master_tracking_number,
+        'label_image': saved_file.file_url,
+        # 'status': shipment.response.HighestSeverity,
+        'total_net_charge': shipment.response.HighestSeverity,
+        'total_net_fedex_charge': shipment.response.HighestSeverity,
+        'total_taxes': shipment.response.HighestSeverity,
+        'total_base_charge': shipment.response.HighestSeverity,
+        'total_net_freight': shipment.response.HighestSeverity,
+        'total_surcharges': shipment.response.HighestSeverity,
+        'total_rebates': shipment.response.HighestSeverity,
+        'total_freight_discounts': shipment.response.HighestSeverity,
+        'raw_response': cstr(shipment.response)
+    })
+
+    try:
+        if len(doc_fedex_shipment.packages) > 1:
+            shipment.RequestedShipment.MasterTrackingId.TrackingNumber = master_tracking_number
+            shipment.RequestedShipment.MasterTrackingId.TrackingIdType.value = 'EXPRESS'
+            for i, doc_package in enumerate(doc_fedex_shipment.packages[1:]):
+                package = shipment.create_wsdl_object_of_type('RequestedPackageLineItem')
+                package.PhysicalPackaging = 'BOX'
+
+                # adding weight
+                package_weight = shipment.create_wsdl_object_of_type('Weight')
+                package_weight.Units = doc_package.weight_units
+                package_weight.Value = doc_package.weight_value
+                package.Weight = package_weight
+
+                # adding dimensions
+                package_dimensions = shipment.create_wsdl_object_of_type('Dimensions')
+                package_dimensions.Units = doc_package.dimensions_units
+                package_dimensions.Length = doc_package.length
+                package_dimensions.Width = doc_package.width
+                package_dimensions.Height = doc_package.height
+                package.Dimensions = package_dimensions
+
+                package.SequenceNumber = i + 2
+                shipment.RequestedShipment.RequestedPackageLineItems = [package]
+                shipment.RequestedShipment.PackageCount = len(doc_fedex_shipment.packages)
+                shipment.send_request()
+
+                msg = ''
+                try:
+                    msg = shipment.response.Message
+                except:
+                    pass
+                if shipment.response.HighestSeverity == "SUCCESS":
+                    frappe.msgprint('Shipment package is added successfully.')
+                elif shipment.response.HighestSeverity == "NOTE":
+                    frappe.msgprint('Shipment package is added with the following note:\n%s' % msg)
+                    for notification in shipment.response.Notifications:
+                        frappe.msgprint('Code: %s, %s' % (notification.Code, notification.Message))
+                elif shipment.response.HighestSeverity == "WARNING":
+                    frappe.msgprint('Shipment package is added with the following warning:\n%s' % msg)
+                    for notification in shipment.response.Notifications:
+                        frappe.msgprint('Code: %s, %s' % (notification.Code, notification.Message))
+                else:  # ERROR, FAILURE
+                    frappe.throw('Adding of Shipment package is failed.')
+                    for notification in shipment.response.Notifications:
+                        frappe.msgprint('Code: %s, %s' % (notification.Code, notification.Message))
+
+                # updating shipment package items
+                tracking_number = shipment.response.CompletedShipmentDetail.CompletedPackageDetails[0].TrackingIds[0].TrackingNumber
+                label_image_data = base64.b64decode(shipment.response.CompletedShipmentDetail.CompletedPackageDetails[0].Label.Parts[0].Image)
+                saved_file = save_file('fedex_label_%s.%s' % (tracking_number, doc_fedex_shipment.label_image_type.lower()), label_image_data, doc_fedex_shipment.doctype, doc_fedex_shipment.name)
+                doc_package.update({
+                    'tracking_number': tracking_number,
+                    'label_image': saved_file.file_url
+                })
+                # frappe.msgprint(str(i + 2) * 4 + '---' * 100 + cstr(shipment.response))
+    except Exception as ex:
+        delete(master_tracking_number)
+        frappe.throw(cstr(ex))
+    try:
+        for shipment_rate_detail in shipment.response.CompletedShipmentDetail.ShipmentRating.ShipmentRateDetails:
+            if shipment_rate_detail.RateType == shipment.response.CompletedShipmentDetail.ShipmentRating.ActualRateType:
+                doc_fedex_shipment.update({'total_net_charge': utils.get_amount(
+                    shipment.RequestedShipment.PreferredCurrency,
+                    shipment_rate_detail.TotalNetCharge.Currency,
+                    shipment_rate_detail.TotalNetCharge.Amount,
+                    shipment_rate_detail.CurrencyExchangeRate.FromCurrency,
+                    shipment_rate_detail.CurrencyExchangeRate.IntoCurrency,
+                    shipment_rate_detail.CurrencyExchangeRate.Rate)
+                })
+                break
+    except Exception as ex:
+        frappe.msgprint('Cannot update Total Amounts: %s' % cstr(ex))
+
+    # del_request.TrackingId.TrackingIdType = 'EXPRESS'
+        # for i, doc_package in enumerate(doc_fedex_shipment.packages):
+
+        #     # Getting the tracking number from the new shipment.
+        #     tracking_number = shipment.response.CompletedShipmentDetail.CompletedPackageDetails[i].TrackingIds[0].TrackingNumber
+        #     # frappe.msgprint(str(shipment.response))
+        #     # Net shipping costs.
+        #     # print "Net Shipping Cost (US$):", shipment.response.CompletedShipmentDetail.CompletedPackageDetails[0].PackageRating.PackageRateDetails[0].NetCharge.Amount
+
+        #     label_image_data = base64.b64decode(shipment.response.CompletedShipmentDetail.CompletedPackageDetails[i].Label.Parts[0].Image)
+        #     saved_file = save_file('fedex_label_%s.%s' % (tracking_number, doc_fedex_shipment.label_image_type.lower()), label_image_data, doc_fedex_shipment.doctype, doc_fedex_shipment.name)
+
+        #     doc_package.update({
+        #         'tracking_number': tracking_number,
+        #         'label_image': saved_file.file_url
+        #     })
+        #     doc_package.save()
 
     """
     This is an example of how to dump a label to a PNG file.
@@ -270,6 +434,7 @@ def create(doc_fedex_shipment):
     # print "SELECTED SERIAL PORT: "+ label_printer.portstr
     # label_printer.write(label_binary_data)
     # label_printer.close()
+    frappe.clear_cache()
 
 
 def create_freight():
@@ -490,7 +655,7 @@ def track(track_number):
         print "Status:", match.StatusDescription
 
 
-def rate_request():
+def rate_request(doc_fedex_shipment):
     config_obj = fedex_config.get()
 
     # This is the object that will be handling our tracking request.
@@ -502,16 +667,16 @@ def rate_request():
 
     # This is very generalized, top-level information.
     # REGULAR_PICKUP, REQUEST_COURIER, DROP_BOX, BUSINESS_SERVICE_CENTER or STATION
-    rate_request.RequestedShipment.DropoffType = 'REGULAR_PICKUP'
+    rate_request.RequestedShipment.DropoffType = doc_fedex_shipment.drop_off_type
 
     # See page 355 in WS_ShipService.pdf for a full list. Here are the common ones:
     # STANDARD_OVERNIGHT, PRIORITY_OVERNIGHT, FEDEX_GROUND, FEDEX_EXPRESS_SAVER
     # To receive rates for multiple ServiceTypes set to None.
-    rate_request.RequestedShipment.ServiceType = 'FEDEX_GROUND'
+    rate_request.RequestedShipment.ServiceType = doc_fedex_shipment.service_type
 
     # What kind of package this will be shipped in.
     # FEDEX_BOX, FEDEX_PAK, FEDEX_TUBE, YOUR_PACKAGING
-    rate_request.RequestedShipment.PackagingType = 'YOUR_PACKAGING'
+    rate_request.RequestedShipment.PackagingType = doc_fedex_shipment.packaging_type
 
     # Shipper's address
     rate_request.RequestedShipment.Shipper.Address.PostalCode = '29631'
