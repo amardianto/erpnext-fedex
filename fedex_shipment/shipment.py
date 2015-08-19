@@ -50,6 +50,7 @@ def on_submit(doc, method=None):
 
     if not frappe.db.get_value('Packing Slip', doc.packing_slip, 'fedex_shipment'):
         frappe.db.set_value('Packing Slip', doc.packing_slip, 'fedex_shipment', doc.name)
+    frappe.clear_cache()
 
 
 def before_cancel(doc, method=None):
