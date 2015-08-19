@@ -5,8 +5,8 @@ import frappe
 from fedex.config import FedexConfig
 
 
-def get():
-    fedex_settings = frappe.get_doc("Fedex Settings")
+def get(fedex_settings):
+    fedex_settings = frappe.get_doc("Fedex Settings", fedex_settings)
     return FedexConfig(key=fedex_settings.key,
                        password=fedex_settings.password,
                        account_number=fedex_settings.account_number,

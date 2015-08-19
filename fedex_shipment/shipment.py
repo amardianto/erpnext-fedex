@@ -53,7 +53,7 @@ def on_submit(doc, method=None):
 
 
 def before_cancel(doc, method=None):
-    delete(doc.tracking_number)
+    delete(doc)
 
 
 @frappe.whitelist()
@@ -116,7 +116,7 @@ def make_fedex_shipment(source_name, target_doc=None):
 
 
 def create(doc_fedex_shipment):
-    config_obj = fedex_config.get()
+    config_obj = fedex_config.get(doc_fedex_shipment.fedex_settings)
 
     # This is the object that will be handling our tracking request.
     shipment = FedexProcessShipmentRequest(config_obj)
@@ -370,7 +370,7 @@ def create(doc_fedex_shipment):
                 })
                 # frappe.msgprint(str(i + 2) * 4 + '---' * 100 + cstr(shipment.response))
     except Exception as ex:
-        delete(master_tracking_number)
+        delete(doc_fedex_shipment)
         frappe.throw(cstr(ex))
     try:
         for shipment_rate_detail in shipment.response.CompletedShipmentDetail.ShipmentRating.ShipmentRateDetails:
@@ -437,8 +437,8 @@ def create(doc_fedex_shipment):
     frappe.clear_cache()
 
 
-def create_freight():
-    config_obj = fedex_config.get()
+def create_freight(doc_fedex_shipment):
+    config_obj = fedex_config.get(doc_fedex_shipment.fedex_settings)
 
     # This is the object that will be handling our tracking request.
     shipment = FedexProcessShipmentRequest(config_obj)
@@ -600,8 +600,8 @@ def create_freight():
     # label_printer.close()
 
 
-def delete(tracking_number):
-    config_obj = fedex_config.get()
+def delete(doc_fedex_shipment):
+    config_obj = fedex_config.get(doc_fedex_shipment.fedex_settings)
 
     # This is the object that will be handling our tracking request.
     del_request = FedexDeleteShipmentRequest(config_obj)
@@ -612,7 +612,7 @@ def delete(tracking_number):
     del_request.DeletionControlType = "DELETE_ALL_PACKAGES"
 
     # The tracking number of the shipment to delete.
-    del_request.TrackingId.TrackingNumber = tracking_number
+    del_request.TrackingId.TrackingNumber = doc_fedex_shipment.tracking_number
 
     # What kind of shipment the tracking number used.
     # Docs say this isn't required, but the WSDL won't validate without it.
@@ -627,13 +627,13 @@ def delete(tracking_number):
 
     # See the response printed out.
     if del_request.response.HighestSeverity == "SUCCESS":
-        frappe.msgprint('Shipment with tracking number %s is deleted successfully.' % tracking_number)
+        frappe.msgprint('Shipment with tracking number %s is deleted successfully.' % doc_fedex_shipment.tracking_number)
     else:
         frappe.throw(del_request.response.Message)
 
 
-def track(track_number):
-    config_obj = fedex_config.get()
+def track(fedex_settings, track_number):
+    config_obj = fedex_config.get(fedex_settings)
 
     # NOTE: TRACKING IS VERY ERRATIC ON THE TEST SERVERS. YOU MAY NEED TO USE
     # PRODUCTION KEYS/PASSWORDS/ACCOUNT #.
@@ -656,7 +656,7 @@ def track(track_number):
 
 
 def rate_request(doc_fedex_shipment):
-    config_obj = fedex_config.get()
+    config_obj = fedex_config.get(doc_fedex_shipment.fedex_settings)
 
     # This is the object that will be handling our tracking request.
     rate_request = FedexRateServiceRequest(config_obj)
@@ -751,8 +751,8 @@ def rate_request(doc_fedex_shipment):
             print "%s: Net FedEx Charge %s %s" % (service.ServiceType, rate_detail.ShipmentRateDetail.TotalNetFedExCharge.Currency, rate_detail.ShipmentRateDetail.TotalNetFedExCharge.Amount)
 
 
-def freight_rate_request():
-    config_obj = fedex_config.get()
+def freight_rate_request(doc_fedex_shipment):
+    config_obj = fedex_config.get(doc_fedex_shipment.fedex_settings)
 
     # This is the object that will be handling our tracking request.
     rate_request = FedexRateServiceRequest(config_obj)
@@ -850,8 +850,8 @@ def freight_rate_request():
             print "%s: Net FedEx Charge %s %s" % (service.ServiceType, rate_detail.ShipmentRateDetail.TotalNetFedExCharge.Currency, rate_detail.ShipmentRateDetail.TotalNetFedExCharge.Amount)
 
 
-def postal_inquiry():
-    config_obj = fedex_config.get()
+def postal_inquiry(doc_fedex_shipment):
+    config_obj = fedex_config.get(doc_fedex_shipment.fedex_settings)
 
     inquiry = PostalCodeInquiryRequest(config_obj)
     inquiry.PostalCode = '29631'
@@ -864,8 +864,8 @@ def postal_inquiry():
     print inquiry.response
 
 
-def validate_address():
-    config_obj = fedex_config.get()
+def validate_address(doc_fedex_shipment):
+    config_obj = fedex_config.get(doc_fedex_shipment.fedex_settings)
 
     # This is the object that will be handling our tracking request.
     connection = FedexAddressValidationRequest(config_obj)
