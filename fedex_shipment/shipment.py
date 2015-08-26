@@ -630,8 +630,9 @@ def delete(doc_fedex_shipment):
     if del_request.response.HighestSeverity == "SUCCESS":
         frappe.msgprint('Shipment with tracking number %s is deleted successfully.' % doc_fedex_shipment.tracking_number)
     else:
+        frappe.throw('Canceling of Shipment in Fedex service failed.')
         for notification in del_request.response.Notifications:
-            frappe.throw(notification.Message)
+            frappe.msgprint('Code: %s, %s' % (notification.code, notification.Message))
 
 
 def track(fedex_settings, track_number):
