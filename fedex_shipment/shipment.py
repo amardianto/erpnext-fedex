@@ -57,65 +57,6 @@ def before_cancel(doc, method=None):
     delete(doc)
 
 
-@frappe.whitelist()
-def make_fedex_shipment(source_name, target_doc=None):
-    def postprocess(source, target):
-        doc_delivery_note = frappe.get_doc('Delivery Note', source.delivery_note)
-
-        # updating preferred currency that is used for returned from Fedex totals
-        target.preferred_currency = doc_delivery_note.currency
-
-        # updating shipper address
-        warehouse = frappe.db.get('Warehouse', source.items[0].warehouse)
-        if not warehouse:
-            warehouse = frappe.db.get('Warehouse', doc_delivery_note.items[0].warehouse)
-            if not warehouse:
-                frappe.throw('Neither Packing Slip Item nor Delivery Note Item has warehouse set.')
-        target.shipper_address_address_line_1 = warehouse.address_line_1
-        target.shipper_address_city = warehouse.city
-        target.shipper_address_state_or_province_code = countries.get_country_state_code(warehouse.country, warehouse.state)
-        target.shipper_address_postal_code = warehouse.postal_code or warehouse.pin
-        if not warehouse.country:
-            frappe.throw('Please specify country in Warehouse %s' % warehouse.name)
-        target.shipper_address_country_code = countries.get_country_code(warehouse.country)
-        target.shipper_contact_person_name = warehouse.company
-        target.shipper_contact_company_name = warehouse.company
-        target.shipper_contact_phone_number = warehouse.phone_no
-
-        # updating recipient address
-        if doc_delivery_note.shipping_address_name:
-            target.fedex_settings = utils.get_fedex_settings(doc_delivery_note.company)
-            shipping_address = frappe.db.get('Address', doc_delivery_note.shipping_address_name)
-            target.recipient_address = shipping_address.name
-            target.recipient_address_address_line_1 = shipping_address.address_line1
-            target.recipient_address_city = shipping_address.city
-            target.recipient_address_state_or_province_code = countries.get_country_state_code(shipping_address.country, shipping_address.state)
-            target.recipient_address_postal_code = shipping_address.pincode
-            target.recipient_address_country_code = countries.get_country_code(shipping_address.country)
-            target.recipient_contact_person_name = shipping_address.customer_name
-            target.recipient_contact_company_name = shipping_address.customer_name
-            target.recipient_contact_phone_number = shipping_address.phone
-        else:
-            frappe.msgprint('Shipping Address is missed in Delivery Note %s' % doc_delivery_note.name)
-
-    if frappe.db.get_value('Packing Slip', source_name, 'fedex_shipment') or frappe.db.get_value('Packing Slip', source_name, 'oc_tracking_number'):
-        frappe.throw('Cannot make new Fedex Shipment: either Fedex Shipment is already created or tracking number is set.')
-
-    doclist = get_mapped_doc('Packing Slip', source_name, {
-        'Packing Slip': {
-            'doctype': 'Fedex Shipment',
-            'field_map': {
-                'name': 'packing_slip'
-            },
-            'validation': {
-                'docstatus': ['=', 0]
-            }
-        }
-    }, target_doc, postprocess)
-
-    return doclist
-
-
 def create(doc_fedex_shipment):
     config_obj = fedex_config.get(doc_fedex_shipment.fedex_settings)
 
@@ -369,20 +310,15 @@ def create(doc_fedex_shipment):
                     'tracking_number': tracking_number,
                     'label_image': saved_file.file_url
                 })
-                # frappe.msgprint(str(i + 2) * 4 + '---' * 100 + cstr(shipment.response))
     except Exception as ex:
         delete(doc_fedex_shipment)
         frappe.throw(cstr(ex))
     try:
         for shipment_rate_detail in shipment.response.CompletedShipmentDetail.ShipmentRating.ShipmentRateDetails:
             if shipment_rate_detail.RateType == shipment.response.CompletedShipmentDetail.ShipmentRating.ActualRateType:
-                doc_fedex_shipment.update({'total_net_charge': utils.get_amount(
-                    shipment.RequestedShipment.PreferredCurrency,
-                    shipment_rate_detail.TotalNetCharge.Currency,
-                    shipment_rate_detail.TotalNetCharge.Amount,
-                    shipment_rate_detail.CurrencyExchangeRate.FromCurrency,
-                    shipment_rate_detail.CurrencyExchangeRate.IntoCurrency,
-                    shipment_rate_detail.CurrencyExchangeRate.Rate)
+                doc_fedex_shipment.update({
+                    'total_net_charge': flt(shipment_rate_detail.TotalNetCharge.Amount),
+                    'totals_currency': cstr(shipment_rate_detail.TotalNetCharge.Currency)
                 })
                 break
     except Exception as ex:
@@ -914,3 +850,79 @@ def validate_address(doc_fedex_shipment):
     # Send the request and print the response
     connection.send_request()
     print connection.response
+
+
+@frappe.whitelist()
+def make_fedex_shipment(source_name, target_doc=None):
+    def postprocess(source, target):
+        doc_delivery_note = frappe.get_doc('Delivery Note', source.delivery_note)
+
+        # updating preferred currency that is used for returned from Fedex totals
+        target.preferred_currency = doc_delivery_note.currency
+
+        # updating shipper address
+        warehouse = frappe.db.get('Warehouse', source.items[0].warehouse)
+        if not warehouse:
+            warehouse = frappe.db.get('Warehouse', doc_delivery_note.items[0].warehouse)
+            if not warehouse:
+                frappe.throw('Neither Packing Slip Item nor Delivery Note Item has warehouse set.')
+        target.shipper_address_address_line_1 = warehouse.address_line_1
+        target.shipper_address_city = warehouse.city
+        target.shipper_address_state_or_province_code = countries.get_country_state_code(warehouse.country, warehouse.state)
+        target.shipper_address_postal_code = warehouse.postal_code or warehouse.pin
+        target.shipper_address_residential = 0
+        if not warehouse.country:
+            frappe.throw('Please specify country in Warehouse %s' % warehouse.name)
+        target.shipper_address_country_code = countries.get_country_code(warehouse.country)
+        target.shipper_contact_person_name = warehouse.company
+        target.shipper_contact_company_name = warehouse.company
+        target.shipper_contact_phone_number = warehouse.phone_no
+
+        # updating recipient address
+        target.customer = doc_delivery_note.customer
+        if doc_delivery_note.shipping_address_name:
+            target.fedex_settings = utils.get_fedex_settings(doc_delivery_note.company)
+            shipping_address = frappe.db.get('Address', doc_delivery_note.shipping_address_name)
+            target.recipient_address = shipping_address.name
+            target.recipient_address_address_line_1 = shipping_address.address_line1
+            target.recipient_address_city = shipping_address.city
+            target.recipient_address_state_or_province_code = countries.get_country_state_code(shipping_address.country, shipping_address.state)
+            target.recipient_address_postal_code = shipping_address.pincode
+            target.recipient_address_country_code = countries.get_country_code(shipping_address.country)
+            target.recipient_contact_person_name = shipping_address.customer_name
+            target.recipient_contact_company_name = shipping_address.customer_name
+            target.recipient_contact_phone_number = shipping_address.phone
+
+            customer_type = frappe.db.get_value('Customer', shipping_address.customer, 'customer_type')
+            target.recipient_address_residential = 0 if customer_type == 'Company' else 1
+        else:
+            frappe.msgprint('Shipping Address is missed in Delivery Note %s' % doc_delivery_note.name)
+
+    if frappe.db.get_value('Packing Slip', source_name, 'fedex_shipment') or frappe.db.get_value('Packing Slip', source_name, 'oc_tracking_number'):
+        frappe.throw('Cannot make new Fedex Shipment: either Fedex Shipment is already created or tracking number is set.')
+
+    doclist = get_mapped_doc('Packing Slip', source_name, {
+        'Packing Slip': {
+            'doctype': 'Fedex Shipment',
+            'field_map': {
+                'name': 'packing_slip'
+            },
+            'validation': {
+                'docstatus': ['=', 0]
+            }
+        }
+    }, target_doc, postprocess)
+
+    return doclist
+
+
+@frappe.whitelist()
+def get_address_details(address):
+    address = frappe.db.get('Address', address)
+    if address:
+        address['state_or_province_code'] = countries.get_country_state_code(address.country, address.state)
+        address['country_code'] = countries.get_country_code(address.country)
+
+        customer_type = frappe.db.get_value('Customer', address.customer, 'customer_type')
+        address['residential'] = 0 if customer_type == 'Company' else 1
+        return address

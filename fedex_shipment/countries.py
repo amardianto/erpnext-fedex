@@ -372,4 +372,8 @@ def get_country_code(country):
 
 
 def get_country_state_code(country, state):
-    return COUNTRY_STATE_CODES.get(country, {}).get(state, '')
+    state_code = COUNTRY_STATE_CODES.get(country, {}).get(state, '')
+    if not state_code:
+        if state in COUNTRY_STATE_CODES.get(country, {}).values():
+            state_code = state
+    return state_code
