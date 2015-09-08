@@ -3,6 +3,7 @@ from __future__ import unicode_literals
 
 import logging
 import base64
+import json
 
 import frappe
 from frappe.utils.file_manager import save_file, get_file, get_files_path
@@ -897,6 +898,27 @@ def make_fedex_shipment(source_name, target_doc=None):
             target.recipient_address_residential = 0 if customer_type == 'Company' else 1
         else:
             frappe.msgprint('Shipping Address is missed in Delivery Note %s' % doc_delivery_note.name)
+
+        # create shipment packages
+        merged_packages = {}
+        for item in source.items:
+            packages = json.loads(item.packages_json or "{}")
+            for pckg_no in packages:
+                merged_pckg = merged_packages.get("pckg_no")
+                if merged_pckg:
+                    pckg = packages.get("pckg_no")
+                    for item_code in pckg:
+                        if merged_pckg.get("item_code"):
+                            merged_pckg[item_code] += pckg[item_code]
+                        else:
+                            merged_pckg[item_code] = pckg[item_code]
+                else:
+                    merged_packages[pckg_no] = packages[pckg_no]
+        target.set("packages", [])
+        for idx, key in enumerate(merged_packages.keys(), 1):
+            fedex_package = frappe.new_doc("Fedex Package")
+            fedex_package.update({"idx": idx})
+            target.packages.append(fedex_package)
 
     if frappe.db.get_value('Packing Slip', source_name, 'fedex_shipment') or frappe.db.get_value('Packing Slip', source_name, 'oc_tracking_number'):
         frappe.throw('Cannot make new Fedex Shipment: either Fedex Shipment is already created or tracking number is set.')
