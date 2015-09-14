@@ -917,8 +917,16 @@ def make_fedex_shipment(source_name, target_doc=None):
         target.set("packages", [])
         for idx, key in enumerate(merged_packages.keys(), 1):
             fedex_package = frappe.new_doc("Fedex Package")
-            fedex_package.update({"idx": idx})
-            target.packages.append(fedex_package)
+            target.append("packages", {
+                "doctype": fedex_package.doctype,
+                "dimensions_units": fedex_package.dimensions_units,
+                "width": fedex_package.width,
+                "height": fedex_package.height,
+                "length": fedex_package.length,
+                "weight_units": fedex_package.weight_units,
+                "weight_value": fedex_package.weight_value,
+                "idx": idx
+            })
 
     if frappe.db.get_value('Packing Slip', source_name, 'fedex_shipment') or frappe.db.get_value('Packing Slip', source_name, 'oc_tracking_number'):
         frappe.throw('Cannot make new Fedex Shipment: either Fedex Shipment is already created or tracking number is set.')
