@@ -461,7 +461,8 @@
    "in_list_view": 0, 
    "label": "Image Type", 
    "options": "DPL\nEPL2\nPDF\nPNG\nZPLII", 
-   "permlevel": 0
+   "permlevel": 0, 
+   "read_only": 1
   }, 
   {
    "default": "PAPER_4X6", 

@@ -4,6 +4,11 @@ from __future__ import unicode_literals
 import logging
 import base64
 import json
+import StringIO
+
+from reportlab.lib.units import inch
+from reportlab.lib.utils import ImageReader
+from reportlab.pdfgen import canvas
 
 import frappe
 from frappe.utils.file_manager import save_file, get_file, get_files_path
@@ -24,6 +29,23 @@ import utils
 
 # Set this to the INFO level to see the response from Fedex printed in stdout.
 logging.basicConfig(level=logging.DEBUG)
+
+
+PDF_CANVAS_SIZE_MAPPING = {
+    "PAPER_4X6": (4 * inch, 6 * inch),
+    "PAPER_4X8": (4 * inch, 8 * inch),
+    "PAPER_4X9": (4 * inch, 9 * inch),
+    "PAPER_7X4.75": (7 * inch, 4.75 * inch),
+    "PAPER_8.5X11_BOTTOM_HALF_LABEL": (8.5 * inch, 11 * inch),
+    "PAPER_8.5X11_TOP_HALF_LABEL": (8.5 * inch, 11 * inch),
+    "STOCK_4X6": (4 * inch, 6 * inch),
+    "STOCK_4X6.75_LEADING_DOC_TAB": (4 * inch, 6.75 * inch),
+    "STOCK_4X6.75_TRAILING_DOC_TAB": (4 * inch, 6.75 * inch),
+    "STOCK_4X8": (4 * inch, 8 * inch),
+    "STOCK_4X9_LEADING_DOC_TAB": (4 * inch, 9 * inch),
+    "STOCK_4X9_TRAILING_DOC_TAB": (4 * inch, 9 * inch),
+    "PAPER \"6X4\"": (6 * inch, 4 * inch)
+}
 
 
 def validate(doc, method=None):
@@ -58,7 +80,26 @@ def before_cancel(doc, method=None):
     delete(doc)
 
 
+def make_pdf_canvas(doc_fedex_shipment):
+    if doc_fedex_shipment.label_image_type.lower() == "png":
+        marging = 0.25
+        width, height = PDF_CANVAS_SIZE_MAPPING.get('label_stock_type', (4 * inch, 6 * inch))
+        c = canvas.Canvas('fedex_labels.pdf', pagesize=(width + marging * inch, height + marging * inch))
+        return c, width, height, marging
+    else:
+        [None] * 4
+
+
+def add_label_to_canvas(pdf_canvas, width, height, marging, label_image_data):
+    if pdf_canvas:
+        image_reader = ImageReader(StringIO.StringIO(label_image_data))
+        pdf_canvas.drawImage(image_reader, marging, marging, width, height, preserveAspectRatio=True)
+        pdf_canvas.showPage()
+
+
 def create(doc_fedex_shipment):
+    # init stuff
+    pdf_canvas, canvas_img_width, canvas_img_height, canvas_img_marging = make_pdf_canvas(doc_fedex_shipment)
     config_obj = fedex_config.get(doc_fedex_shipment.fedex_settings)
 
     # This is the object that will be handling our tracking request.
@@ -235,6 +276,7 @@ def create(doc_fedex_shipment):
     master_tracking_number = shipment.response.CompletedShipmentDetail.CompletedPackageDetails[0].TrackingIds[0].TrackingNumber
     label_image_data = base64.b64decode(shipment.response.CompletedShipmentDetail.CompletedPackageDetails[0].Label.Parts[0].Image)
     saved_file = save_file('fedex_label_%s.%s' % (master_tracking_number, doc_fedex_shipment.label_image_type.lower()), label_image_data, doc_fedex_shipment.doctype, doc_fedex_shipment.name)
+    add_label_to_canvas(pdf_canvas, canvas_img_width, canvas_img_height, canvas_img_marging, label_image_data)
 
     doc_master_package.update({
         'tracking_number': master_tracking_number,
@@ -311,6 +353,13 @@ def create(doc_fedex_shipment):
                     'tracking_number': tracking_number,
                     'label_image': saved_file.file_url
                 })
+                add_label_to_canvas(pdf_canvas, canvas_img_width, canvas_img_height, canvas_img_marging, label_image_data)
+
+        # complete pdf doc
+        try:
+            pdf_canvas and save_file('all_fedex_labels_%s.pdf' % master_tracking_number, pdf_canvas.getpdfdata(), doc_fedex_shipment.doctype, doc_fedex_shipment.name)
+        except Exception as ex:
+            frappe.msgprint('Cannot merge Fedex labels to PDF file:\n' + cstr(ex))
     except Exception as ex:
         delete(doc_fedex_shipment)
         frappe.throw(cstr(ex))
