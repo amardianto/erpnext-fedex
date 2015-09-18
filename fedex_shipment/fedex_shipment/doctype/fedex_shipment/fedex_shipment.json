@@ -49,7 +49,7 @@
    "options": "REGULAR_PICKUP\nREQUEST_COURIER\nDROP_BOX\nBUSINESS_SERVICE_CENTER\nSTATION"
   }, 
   {
-   "default": "FEDEX_EXPRESS_SAVER", 
+   "default": "FEDEX_2_DAY", 
    "description": "", 
    "fieldname": "service_type", 
    "fieldtype": "Select", 
