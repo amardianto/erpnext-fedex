@@ -1005,3 +1005,11 @@ def get_address_details(address):
         customer_type = frappe.db.get_value('Customer', address.customer, 'customer_type')
         address['residential'] = 0 if customer_type == 'Company' else 1
         return address
+
+
+@frappe.whitelist()
+def get_all_fedex_labels_file_url(fedex_shipment):
+    for fs in frappe.get_all('File Data', fields=['file_name', 'file_url'],
+        filters = {'attached_to_name': fedex_shipment, 'attached_to_doctype': 'Fedex Shipment'}):
+        if fs.get('file_name', '').startswith('all_fedex_labels_') and fs.get('file_name', '').endswith('.pdf'):
+            return fs.get('file_url')

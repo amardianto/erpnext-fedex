@@ -23,3 +23,30 @@ cur_frm.cscript.recipient_address = function() {
         }
     });
 }
+
+cur_frm.cscript.on_submit = function() {
+    var me = this;
+    frappe.call({
+        freeze: true,
+        method: "fedex_shipment.shipment.get_all_fedex_labels_file_url",
+        args: {
+            "fedex_shipment": me.frm.doc.name,
+        },
+        callback: function(r) {
+            if(!r.exc) {
+                if(r.message) {
+                    var w = window.open(r.message);
+                    if(w) {
+                        w.onfocus = function() {
+                            w.close();
+                        }
+                        w.print();
+                    }
+                    else {
+                        msgprint(__("Please enable pop-ups")); return;
+                    }
+                }
+            }
+        }
+    });
+}
