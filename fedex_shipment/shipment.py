@@ -97,6 +97,28 @@ def add_label_to_canvas(pdf_canvas, width, height, marging, label_image_data):
         pdf_canvas.showPage()
 
 
+def get_customer_references(doc_fedex_shipment):
+    if not doc_fedex_shipment.packing_slip:
+        frappe.throw("Please specify Packing Slip in Fedex Shipment")
+    dn = frappe.db.get_value("Packing Slip", doc_fedex_shipment.packing_slip, "delivery_note")
+    po_no = frappe.db.get_value("Delivery Note", dn, "po_no")
+    return (dn, po_no)
+
+
+def update_customer_references(doc_fedex_shipment, shipment, package):
+    dn_name, po_no = get_customer_references(doc_fedex_shipment)
+    if dn_name:
+        customer_reference = shipment.create_wsdl_object_of_type('CustomerReference')
+        customer_reference.CustomerReferenceType = "INVOICE_NUMBER"
+        customer_reference.Value = dn_name
+        package.CustomerReferences.append(customer_reference)
+    if po_no:
+        customer_reference = shipment.create_wsdl_object_of_type('CustomerReference')
+        customer_reference.CustomerReferenceType = "P_O_NUMBER"
+        customer_reference.Value = po_no
+        package.CustomerReferences.append(customer_reference)
+
+
 def create(doc_fedex_shipment):
     # init stuff
     pdf_canvas, canvas_img_width, canvas_img_height, canvas_img_marging = make_pdf_canvas(doc_fedex_shipment)
@@ -173,6 +195,7 @@ def create(doc_fedex_shipment):
     doc_master_package = doc_fedex_shipment.packages[0]
     package = shipment.create_wsdl_object_of_type('RequestedPackageLineItem')
     package.PhysicalPackaging = 'BOX'
+    update_customer_references(doc_fedex_shipment, shipment, package)
 
     # adding weight
     package_weight = shipment.create_wsdl_object_of_type('Weight')
@@ -305,6 +328,7 @@ def create(doc_fedex_shipment):
             for i, doc_package in enumerate(doc_fedex_shipment.packages[1:]):
                 package = shipment.create_wsdl_object_of_type('RequestedPackageLineItem')
                 package.PhysicalPackaging = 'BOX'
+                update_customer_references(doc_fedex_shipment, shipment, package)
 
                 # adding weight
                 package_weight = shipment.create_wsdl_object_of_type('Weight')
@@ -943,6 +967,8 @@ def make_fedex_shipment(source_name, target_doc=None):
             target.recipient_contact_person_name = shipping_address.customer_name
             if doc_customer.customer_type == "Company":
                 target.recipient_contact_company_name = doc_customer.customer_name
+                if not target.recipient_contact_company_name:
+                    target.recipient_contact_company_name = shipping_address.customer_name
             else:
                 target.recipient_contact_company_name = shipping_address.customer_name
             target.recipient_contact_phone_number = shipping_address.phone
