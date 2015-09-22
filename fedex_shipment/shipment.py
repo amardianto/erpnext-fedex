@@ -930,6 +930,7 @@ def make_fedex_shipment(source_name, target_doc=None):
 
         # updating recipient address
         target.customer = doc_delivery_note.customer
+        doc_customer = frappe.get_doc("Customer", doc_delivery_note.customer)
         if doc_delivery_note.shipping_address_name:
             target.fedex_settings = utils.get_fedex_settings(doc_delivery_note.company)
             shipping_address = frappe.db.get('Address', doc_delivery_note.shipping_address_name)
@@ -940,7 +941,10 @@ def make_fedex_shipment(source_name, target_doc=None):
             target.recipient_address_postal_code = shipping_address.pincode
             target.recipient_address_country_code = countries.get_country_code(shipping_address.country)
             target.recipient_contact_person_name = shipping_address.customer_name
-            target.recipient_contact_company_name = shipping_address.customer_name
+            if doc_customer.customer_type == "Company":
+                target.recipient_contact_company_name = doc_customer.customer_name
+            else:
+                target.recipient_contact_company_name = shipping_address.customer_name
             target.recipient_contact_phone_number = shipping_address.phone
 
             customer_type = frappe.db.get_value('Customer', shipping_address.customer, 'customer_type')

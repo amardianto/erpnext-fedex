@@ -50,3 +50,36 @@ cur_frm.cscript.on_submit = function() {
         }
     });
 }
+
+// frappe.ui.form.on("Fedex Shipment", {
+//     onload: function(frm) {
+//         var df = frappe.meta.get_docfield("Fedex Shipment", "recipient_address_state_or_province_code");
+//         df.on_make = function(field) {
+//             $(field.input_area).addClass("ui-front");
+//             field.$input.autocomplete({
+//                 minLength: 0,
+//                 minChars: 0,
+//                 source: function(request, response) {
+//                     frappe.call({
+//                         method:"frappe.client.get_list",
+//                         args:{
+//                             doctype:"Item Attribute Value",
+//                             filters: [
+//                                 ["parent","=", field.doc.attribute],
+//                                 ["attribute_value", "like", request.term + "%"]
+//                             ],
+//                             fields: ["attribute_value"]
+//                         },
+//                         callback: function(r) {
+//                             response($.map(r.message, function(d) { return d.attribute_value; }));
+//                         }
+//                     });
+//                 },
+//                 select: function(event, ui) {
+//                     field.$input.val(ui.item.value);
+//                     field.$input.trigger("change");
+//                 }
+//             });
+//         }
+//     }
+// });
