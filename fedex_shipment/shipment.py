@@ -78,6 +78,7 @@ def on_submit(doc, method=None):
 
 def before_cancel(doc, method=None):
     delete(doc)
+    frappe.db.set_value("Packing Slip", doc.packing_slip, "fedex_shipment", None)
 
 
 def make_pdf_canvas(doc_fedex_shipment):
@@ -640,9 +641,13 @@ def delete(doc_fedex_shipment):
     if del_request.response.HighestSeverity == "SUCCESS":
         frappe.msgprint('Shipment with tracking number %s is deleted successfully.' % doc_fedex_shipment.tracking_number)
     else:
+        codes = []
         for notification in del_request.response.Notifications:
+            codes.append(cstr(notification.Code))
             frappe.msgprint('Code: %s, %s' % (notification.Code, notification.Message))
-        frappe.throw('Canceling of Shipment in Fedex service failed.')
+        # code 8159, Shipment Delete was requested for a tracking number already in a deleted state.
+        if "8159" not in codes:
+            frappe.throw('Canceling of Shipment in Fedex service failed.')
 
 
 def track(fedex_settings, track_number):
