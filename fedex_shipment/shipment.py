@@ -646,7 +646,8 @@ def delete(doc_fedex_shipment):
             codes.append(cstr(notification.Code))
             frappe.msgprint('Code: %s, %s' % (notification.Code, notification.Message))
         # code 8159, Shipment Delete was requested for a tracking number already in a deleted state.
-        if "8159" not in codes:
+        # code 8149, Unable to retrieve record from database
+        if not ("8159" in codes or "8149" in codes):
             frappe.throw('Canceling of Shipment in Fedex service failed.')
 
 
